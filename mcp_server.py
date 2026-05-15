@@ -168,7 +168,7 @@ if __name__ == "__main__":
             app = mcp.sse_app()
             print(f"Starting MCP SSE server on {HOST}:{PORT}/sse")
 
-        app = BearerTokenMiddleware(app)
+        app.add_middleware(BearerTokenMiddleware)
         uvicorn.run(app, host=HOST, port=PORT, proxy_headers=True, forwarded_allow_ips="*")
 
     else:
