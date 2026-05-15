@@ -13,7 +13,8 @@ Environment variables (set in .env):
 
 import os
 import psycopg2
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
@@ -26,17 +27,19 @@ EMBEDDING_DIM = 768   # must match the value used during embed_and_load.py
 
 # ── Gemini ────────────────────────────────────────────────────────────────────
 
-genai.configure(api_key=os.environ["GEMINI_EMBEDDING_API_TOKEN"])
+_client = genai.Client(api_key=os.environ["GEMINI_EMBEDDING_API_TOKEN"])
 
 
 def embed_query(text: str) -> list[float]:
-    result = genai.embed_content(
+    result = _client.models.embed_content(
         model=GEMINI_MODEL,
-        content=text,
-        task_type="retrieval_query",      # query-side task type
-        output_dimensionality=EMBEDDING_DIM,
+        contents=text,
+        config=types.EmbedContentConfig(
+            task_type="RETRIEVAL_QUERY",
+            output_dimensionality=EMBEDDING_DIM,
+        ),
     )
-    return result["embedding"]
+    return result.embeddings[0].values
 
 
 # ── PostgreSQL ────────────────────────────────────────────────────────────────

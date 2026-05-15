@@ -32,7 +32,7 @@ Creates table `apex_chunks`, HNSW index, and `search_apex_docs()` function.
 ## Step 3 — Embed and load
 
 ```bash
-pip install google-generativeai psycopg2-binary python-dotenv mcp
+pip install google-genai psycopg2-binary python-dotenv mcp
 python embed_and_load.py
 ```
 
