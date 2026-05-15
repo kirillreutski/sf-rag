@@ -35,7 +35,7 @@ load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-GEMINI_MODEL  = "gemini-embedding-2"
+GEMINI_MODEL  = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2")
 EMBEDDING_DIM = 768
 
 TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")

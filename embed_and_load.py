@@ -24,7 +24,7 @@ load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-GEMINI_MODEL  = "gemini-embedding-2"
+GEMINI_MODEL  = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2")
 EMBEDDING_DIM = 768      # must match setup_db.sql vector(N)
 BATCH_SIZE    = 50       # DB insert batch size
 MAX_RPM       = 80       # Gemini API rate limit (requests per minute)
