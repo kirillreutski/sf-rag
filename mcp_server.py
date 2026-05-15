@@ -1,21 +1,19 @@
 """
-MCP server: Salesforce Apex Developer Guide semantic search.
-
-Exposes one tool:
-    search_apex_docs(query, k=5) → top-K relevant documentation chunks
+MCP server: Salesforce documentation semantic search.
 
 Transports
 ----------
-stdio  (default) — local subprocess, no auth needed.
-sse              — network server with Bearer token auth.
+stdio            (default) — local subprocess, no auth needed.
+streamable-http  — network server with Bearer token auth (recommended for remote).
+sse              — legacy SSE transport, use streamable-http instead.
 
 Environment variables (set in .env):
     PG_CONNECTION_STRING        postgresql://user:pass@host:5432/dbname
     GEMINI_EMBEDDING_API_TOKEN  your Gemini API key
-    MCP_TRANSPORT               "stdio" (default) | "sse"
-    MCP_HOST                    bind host for SSE (default: 0.0.0.0)
-    MCP_PORT                    bind port for SSE (default: 8000)
-    MCP_API_TOKEN               bearer token required for SSE transport
+    MCP_TRANSPORT               "stdio" (default) | "streamable-http" | "sse"
+    MCP_HOST                    bind host (default: 0.0.0.0)
+    MCP_PORT                    bind port (default: 8000)
+    MCP_API_TOKEN               bearer token required for remote transports
 """
 
 import os
@@ -40,6 +38,7 @@ HOST      = os.getenv("MCP_HOST", "0.0.0.0")
 PORT      = int(os.getenv("MCP_PORT", "8000"))
 API_TOKEN = os.getenv("MCP_API_TOKEN", "")
 
+
 def embed_query(text: str) -> list[float]:
     return get_embedding(text, "RETRIEVAL_QUERY")
 
@@ -51,7 +50,6 @@ def vec_literal(v: list[float]) -> str:
 
 
 def semantic_search(embedding: list[float], table: str, k: int, min_sim: float):
-    # Derive function name from table: apex_chunks → search_apex
     guide = table.replace("_chunks", "")
     conn = psycopg2.connect(os.environ["PG_CONNECTION_STRING"])
     try:
@@ -134,30 +132,33 @@ def search_aura_docs(query: str, k: int = 5) -> str:
     return _search("aura_chunks", query, k)
 
 
-# ── Auth middleware (SSE only) ─────────────────────────────────────────────────
+# ── Auth middleware ───────────────────────────────────────────────────────────
 
 class BearerTokenMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         auth = request.headers.get("Authorization", "")
         token = auth.removeprefix("Bearer ").strip()
         if token != API_TOKEN:
-            return Response("Unauthorized", status_code=401,
-                            media_type="text/plain")
+            return Response("Unauthorized", status_code=401, media_type="text/plain")
         return await call_next(request)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    if TRANSPORT == "sse":
+    if TRANSPORT in ("sse", "streamable-http"):
         if not API_TOKEN:
-            print("ERROR: MCP_API_TOKEN must be set for SSE transport.", file=sys.stderr)
+            print(f"ERROR: MCP_API_TOKEN must be set for {TRANSPORT} transport.", file=sys.stderr)
             sys.exit(1)
 
-        app = mcp.sse_app()
-        app.add_middleware(BearerTokenMiddleware)
+        if TRANSPORT == "streamable-http":
+            app = mcp.streamable_http_app()
+            print(f"Starting MCP streamable-http server on {HOST}:{PORT}/mcp")
+        else:
+            app = mcp.sse_app()
+            print(f"Starting MCP SSE server on {HOST}:{PORT}/sse")
 
-        print(f"Starting MCP SSE server on {HOST}:{PORT}")
+        app.add_middleware(BearerTokenMiddleware)
         uvicorn.run(app, host=HOST, port=PORT, proxy_headers=True, forwarded_allow_ips="*")
 
     else:
