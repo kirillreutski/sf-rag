@@ -22,8 +22,6 @@ import os
 import sys
 import psycopg2
 import uvicorn
-from google import genai
-from google.genai import types
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -31,33 +29,19 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from gemini_embed import EMBEDDING_DIM, get_embedding
+
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-
-GEMINI_MODEL  = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2")
-EMBEDDING_DIM = 768
 
 TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")
 HOST      = os.getenv("MCP_HOST", "0.0.0.0")
 PORT      = int(os.getenv("MCP_PORT", "8000"))
 API_TOKEN = os.getenv("MCP_API_TOKEN", "")
 
-# ── Gemini ────────────────────────────────────────────────────────────────────
-
-_gemini = genai.Client(api_key=os.environ["GEMINI_EMBEDDING_API_TOKEN"])
-
-
 def embed_query(text: str) -> list[float]:
-    result = _gemini.models.embed_content(
-        model=GEMINI_MODEL,
-        contents=text,
-        config=types.EmbedContentConfig(
-            task_type="RETRIEVAL_QUERY",
-            output_dimensionality=EMBEDDING_DIM,
-        ),
-    )
-    return result.embeddings[0].values
+    return get_embedding(text, "RETRIEVAL_QUERY")
 
 
 # ── PostgreSQL ────────────────────────────────────────────────────────────────

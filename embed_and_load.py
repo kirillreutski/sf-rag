@@ -15,20 +15,17 @@ import json
 import os
 import time
 import psycopg2
-from google import genai
-from google.genai import types
 from dotenv import load_dotenv
 from pathlib import Path
+
+from gemini_embed import EMBEDDING_DIM, get_embedding
 
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-GEMINI_MODEL  = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-2")
-EMBEDDING_DIM = 768      # must match setup_db.sql vector(N)
-BATCH_SIZE    = 50       # DB insert batch size
-MAX_RPM       = 80       # Gemini API rate limit (requests per minute)
-MAX_RETRIES   = 5
+BATCH_SIZE = 50
+MAX_RPM    = 80
 
 # ── Rate limiter ──────────────────────────────────────────────────────────────
 
@@ -42,7 +39,6 @@ class RateLimiter:
     def acquire(self) -> None:
         while True:
             now = time.monotonic()
-            # Drop timestamps older than 60 s
             while self._timestamps and now - self._timestamps[0] >= 60.0:
                 self._timestamps.popleft()
 
@@ -50,78 +46,15 @@ class RateLimiter:
                 self._timestamps.append(now)
                 return
 
-            # Sleep until the oldest slot expires
             sleep_for = 60.0 - (now - self._timestamps[0]) + 0.01
             time.sleep(sleep_for)
 
 
 _limiter = RateLimiter(MAX_RPM)
 
-# ── Gemini key rotator ────────────────────────────────────────────────────────
 
-class KeyRotator:
-    """
-    Cycles through API keys on 429. Raises only when every key
-    returns 429 in a row without a successful request between them.
-    """
-
-    def __init__(self, keys: list[str]) -> None:
-        if not keys:
-            raise ValueError("GEMINI_EMBEDDING_API_TOKEN is empty")
-        self.keys = keys
-        self._idx = 0
-        self._consecutive_failures = 0
-
-    @property
-    def client(self) -> genai.Client:
-        return genai.Client(api_key=self.keys[self._idx])
-
-    def on_success(self) -> None:
-        self._consecutive_failures = 0
-
-    def rotate(self) -> bool:
-        """Switch to next key. Returns False when all keys have failed in a row."""
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= len(self.keys):
-            return False
-        self._idx = (self._idx + 1) % len(self.keys)
-        return True
-
-    @property
-    def label(self) -> str:
-        return f"key {self._idx + 1}/{len(self.keys)}"
-
-
-_keys = [k.strip() for k in os.environ["GEMINI_EMBEDDING_API_TOKEN"].split(",") if k.strip()]
-_rotator = KeyRotator(_keys)
-
-
-def get_embedding(text: str, retries: int = 0) -> list[float]:
-    _limiter.acquire()
-    try:
-        result = _rotator.client.models.embed_content(
-            model=GEMINI_MODEL,
-            contents=text,
-            config=types.EmbedContentConfig(
-                task_type="RETRIEVAL_DOCUMENT",
-                output_dimensionality=EMBEDDING_DIM,
-            ),
-        )
-        _rotator.on_success()
-        return result.embeddings[0].values
-    except Exception as exc:
-        if "429" in str(exc):
-            if not _rotator.rotate():
-                raise RuntimeError(f"All {len(_rotator.keys)} API keys exhausted with 429") from exc
-            print(f"\n  [429 → {_rotator.label}]")
-            return get_embedding(text, retries)   # retry same chunk with new key, no backoff
-
-        if retries >= MAX_RETRIES:
-            raise
-        wait = 2 ** retries
-        print(f"\n  [retry {retries + 1}/{MAX_RETRIES}] {exc!r} — waiting {wait}s")
-        time.sleep(wait)
-        return get_embedding(text, retries + 1)
+def embed_document(text: str) -> list[float]:
+    return get_embedding(text, "RETRIEVAL_DOCUMENT", rate_limiter=_limiter)
 
 
 # ── PostgreSQL ────────────────────────────────────────────────────────────────
@@ -203,7 +136,6 @@ class ProgressLogger:
             f"{rate_warn}"
             f"  saved={self.inserted}"
         )
-        # Pad to overwrite previous longer line
         print(line.ljust(110), end="", flush=True)
 
     def _current_rpm(self) -> float:
@@ -214,7 +146,7 @@ class ProgressLogger:
     def _eta(self, elapsed: float) -> str:
         if self.done == 0:
             return "?"
-        rate = self.done / elapsed          # chunks per second
+        rate = self.done / elapsed
         remaining = (self.total - self.done) / rate
         return fmt_duration(remaining)
 
@@ -260,7 +192,7 @@ def main(chunks_path: Path, table: str) -> None:
     t_start = time.monotonic()
 
     for chunk in todo:
-        chunk["embedding"] = get_embedding(chunk["text"])
+        chunk["embedding"] = embed_document(chunk["text"])
         batch.append(chunk)
 
         inserted = 0
@@ -270,7 +202,6 @@ def main(chunks_path: Path, table: str) -> None:
 
         progress.tick(inserted)
 
-    # Flush remainder
     if batch:
         inserted = insert_batch(conn, batch, table)
         progress.inserted += inserted
@@ -284,7 +215,7 @@ def main(chunks_path: Path, table: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--chunks", required=True,              type=Path, help="Input .jsonl file")
-    parser.add_argument("--table",  required=True,              type=str,  help="Target PostgreSQL table (e.g. lwc_chunks)")
+    parser.add_argument("--chunks", required=True, type=Path, help="Input .jsonl file")
+    parser.add_argument("--table",  required=True, type=str,  help="Target PostgreSQL table (e.g. lwc_chunks)")
     args = parser.parse_args()
     main(args.chunks, args.table)
