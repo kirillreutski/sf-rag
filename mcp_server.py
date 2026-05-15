@@ -23,8 +23,6 @@ import uvicorn
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
 from starlette.responses import Response
 
 from gemini_embed import EMBEDDING_DIM, get_embedding
@@ -134,13 +132,25 @@ def search_aura_docs(query: str, k: int = 5) -> str:
 
 # ── Auth middleware ───────────────────────────────────────────────────────────
 
-class BearerTokenMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        auth = request.headers.get("Authorization", "")
-        token = auth.removeprefix("Bearer ").strip()
-        if token != API_TOKEN:
-            return Response("Unauthorized", status_code=401, media_type="text/plain")
-        return await call_next(request)
+class BearerTokenMiddleware:
+    """Pure ASGI middleware — compatible with streaming responses."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            # Allow OAuth discovery endpoints without auth
+            if not path.startswith("/.well-known"):
+                headers = dict(scope.get("headers", []))
+                auth = headers.get(b"authorization", b"").decode()
+                token = auth.removeprefix("Bearer ").strip()
+                if token != API_TOKEN:
+                    response = Response("Unauthorized", status_code=401, media_type="text/plain")
+                    await response(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -158,7 +168,7 @@ if __name__ == "__main__":
             app = mcp.sse_app()
             print(f"Starting MCP SSE server on {HOST}:{PORT}/sse")
 
-        app.add_middleware(BearerTokenMiddleware)
+        app = BearerTokenMiddleware(app)
         uvicorn.run(app, host=HOST, port=PORT, proxy_headers=True, forwarded_allow_ips="*")
 
     else:
