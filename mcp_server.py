@@ -26,6 +26,7 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -85,6 +86,7 @@ def semantic_search(embedding: list[float], table: str, k: int, min_sim: float):
 
 mcp = FastMCP(
     name="sf-docs",
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     instructions=(
         "Use the appropriate search tool based on what the user is asking about:\n"
         "- search_apex_docs  → Apex (server-side code, triggers, classes, SOQL, governors)\n"
