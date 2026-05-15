@@ -6,15 +6,16 @@ Strategy:
   2. Sections that exceed MAX_TOKENS are further split at paragraph/code-block
      boundaries with OVERLAP_TOKENS of carry-over context.
   3. Each chunk keeps a breadcrumb of parent headings.
-  4. Output: chunks/chunks.jsonl
+
+Usage:
+    python chunk_docs.py --docs docs/lwc/ --output chunks/lwc_chunks.jsonl
 """
 
+import argparse
 import json
 import re
 import uuid
 from pathlib import Path
-DOCS_DIR = Path("/home/user/sf-rag/docs")
-OUTPUT_FILE = Path("/home/user/sf-rag/chunks/chunks.jsonl")
 MAX_TOKENS = 1000
 OVERLAP_TOKENS = 100
 
@@ -179,12 +180,12 @@ def process_file(md_path: Path) -> list[dict]:
     return chunks
 
 
-def main():
-    OUTPUT_FILE.parent.mkdir(exist_ok=True)
-    md_files = sorted(DOCS_DIR.glob("*.md"))
+def main(docs_dir: Path, output_file: Path) -> None:
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    md_files = sorted(docs_dir.glob("*.md"))
 
     total = 0
-    with OUTPUT_FILE.open("w", encoding="utf-8") as out:
+    with output_file.open("w", encoding="utf-8") as out:
         for md_path in md_files:
             print(f"Processing {md_path.name} ...", end=" ", flush=True)
             file_chunks = process_file(md_path)
@@ -194,21 +195,24 @@ def main():
             total += len(file_chunks)
 
     print(f"\nTotal chunks: {total}")
-    print(f"Output: {OUTPUT_FILE}")
+    print(f"Output: {output_file}")
 
     # Quick stats
     token_counts = []
-    with OUTPUT_FILE.open() as f:
+    with output_file.open() as f:
         for line in f:
             token_counts.append(json.loads(line)["token_count"])
 
     n = len(token_counts)
     mean = sum(token_counts) / n
-    sorted_tc = sorted(token_counts)
-    median = sorted_tc[n // 2]
+    median = sorted(token_counts)[n // 2]
     print(f"Token stats — min: {min(token_counts)}, max: {max(token_counts)}, "
           f"mean: {mean:.0f}, median: {median}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--docs",   required=True, type=Path, help="Directory with .md files")
+    parser.add_argument("--output", required=True, type=Path, help="Output .jsonl file")
+    args = parser.parse_args()
+    main(args.docs, args.output)

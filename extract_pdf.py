@@ -1,15 +1,16 @@
 """
-Extract Salesforce Apex Developer Guide PDF to Markdown files.
+Extract a Salesforce PDF guide to Markdown files.
 Splits by level-2 TOC sections, preserves code blocks and heading hierarchy.
+
+Usage:
+    python extract_pdf.py --pdf path/to/guide.pdf --output docs/lwc/
 """
 
+import argparse
 import fitz
 import re
 import os
 from pathlib import Path
-
-PDF_PATH = "/home/user/sf-rag/salesforce_apex_developer_guide.pdf"
-OUTPUT_DIR = "/home/user/sf-rag/docs"
 
 HEADING_FONT = "VAGRoundedStd"
 BODY_FONTS = {"MyriadPro-LightSemiCn", "MyriadPro-LightSemiCnIt", "MyriadPro-SemiboldSemiCn"}
@@ -253,22 +254,19 @@ def slugify(title: str) -> str:
     return t.strip("_")
 
 
-def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def main(pdf_path: Path, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    doc = fitz.open(PDF_PATH)
+    doc = fitz.open(pdf_path)
     toc = doc.get_toc()
     total_pages = len(doc)
 
-    # Level-2 sections with 0-indexed start pages
     level2 = [(title, page - 1) for level, title, page in toc if level == 2]
 
-    # Build chapters: merge sections that start on the same page
     chapters: list[tuple[str, int, int]] = []
     for idx, (title, start) in enumerate(level2):
         end = level2[idx + 1][1] if idx + 1 < len(level2) else total_pages
         if start >= end:
-            # Zero-length section (same page as next) – skip or merge forward
             print(f"  [skip] '{title}' has no dedicated pages (p{start} == p{end})")
             continue
         chapters.append((title, start, end))
@@ -277,7 +275,7 @@ def main():
 
     for ch_idx, (title, start, end) in enumerate(chapters):
         filename = f"{ch_idx:02d}_{slugify(title)}.md"
-        filepath = Path(OUTPUT_DIR) / filename
+        filepath = output_dir / filename
         print(f"  [{ch_idx+1}/{len(chapters)}] {title} (pp {start+1}–{end}) → {filename}")
 
         all_items: list[tuple[str, str]] = [("heading_1", title)]
@@ -297,4 +295,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pdf",    required=True, type=Path, help="Path to the PDF file")
+    parser.add_argument("--output", required=True, type=Path, help="Output directory for .md files")
+    args = parser.parse_args()
+    main(args.pdf, args.output)

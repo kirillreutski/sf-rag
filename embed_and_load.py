@@ -2,7 +2,7 @@
 Embed chunks with Gemini Embedding 2 and load them into PostgreSQL (pgvector).
 
 Usage:
-    python embed_and_load.py [--chunks chunks/chunks.jsonl]
+    python embed_and_load.py --chunks chunks/lwc_chunks.jsonl --table lwc_chunks
 
 Environment variables (set in .env):
     PG_CONNECTION_STRING        postgresql://user:pass@host:5432/dbname
@@ -93,15 +93,15 @@ def connect() -> psycopg2.extensions.connection:
     return psycopg2.connect(os.environ["PG_CONNECTION_STRING"])
 
 
-def get_existing_ids(conn) -> set[str]:
+def get_existing_ids(conn, table: str) -> set[str]:
     with conn.cursor() as cur:
-        cur.execute("SELECT id FROM apex_chunks;")
+        cur.execute(f"SELECT id FROM {table};")
         return {str(row[0]) for row in cur.fetchall()}
 
 
-def insert_batch(conn, rows: list[dict]) -> int:
-    sql = """
-        INSERT INTO apex_chunks (id, source, breadcrumb, heading, text, token_count, embedding)
+def insert_batch(conn, rows: list[dict], table: str) -> int:
+    sql = f"""
+        INSERT INTO {table} (id, source, breadcrumb, heading, text, token_count, embedding)
         VALUES (%s, %s, %s, %s, %s, %s, %s::vector)
         ON CONFLICT (id) DO NOTHING;
     """
@@ -189,7 +189,7 @@ class ProgressLogger:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main(chunks_path: Path) -> None:
+def main(chunks_path: Path, table: str) -> None:
     chunks = [
         json.loads(line)
         for line in chunks_path.read_text().splitlines()
@@ -197,9 +197,10 @@ def main(chunks_path: Path) -> None:
     ]
 
     print(f"Chunks file : {chunks_path}  ({len(chunks)} total)")
+    print(f"Table       : {table}")
 
     conn     = connect()
-    existing = get_existing_ids(conn)
+    existing = get_existing_ids(conn, table)
     todo     = [c for c in chunks if c["id"] not in existing]
 
     print(f"In DB       : {len(existing)}")
@@ -223,14 +224,14 @@ def main(chunks_path: Path) -> None:
 
         inserted = 0
         if len(batch) >= BATCH_SIZE:
-            inserted = insert_batch(conn, batch)
+            inserted = insert_batch(conn, batch, table)
             batch.clear()
 
         progress.tick(inserted)
 
     # Flush remainder
     if batch:
-        inserted = insert_batch(conn, batch)
+        inserted = insert_batch(conn, batch, table)
         progress.inserted += inserted
 
     elapsed = time.monotonic() - t_start
@@ -242,6 +243,7 @@ def main(chunks_path: Path) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--chunks", default="chunks/chunks.jsonl", type=Path)
+    parser.add_argument("--chunks", required=True,              type=Path, help="Input .jsonl file")
+    parser.add_argument("--table",  required=True,              type=str,  help="Target PostgreSQL table (e.g. lwc_chunks)")
     args = parser.parse_args()
-    main(args.chunks)
+    main(args.chunks, args.table)
