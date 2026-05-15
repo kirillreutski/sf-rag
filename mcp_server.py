@@ -47,6 +47,32 @@ def vec_literal(v: list[float]) -> str:
     return "[" + ",".join(f"{x:.8f}" for x in v) + "]"
 
 
+def get_populated_tables() -> set[str]:
+    """Return which of the known tables exist and have at least one row."""
+    known = ("apex_chunks", "lwc_chunks", "aura_chunks")
+    try:
+        conn = psycopg2.connect(os.environ["PG_CONNECTION_STRING"])
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                    AND table_name = ANY(%s)
+                """, (list(known),))
+                existing = {row[0] for row in cur.fetchall()}
+                populated = set()
+                for table in existing:
+                    cur.execute(f"SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)")
+                    if cur.fetchone()[0]:
+                        populated.add(table)
+                return populated
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"Warning: could not check DB tables: {exc}", file=sys.stderr)
+        return set()
+
+
 def semantic_search(embedding: list[float], table: str, k: int, min_sim: float):
     guide = table.replace("_chunks", "")
     conn = psycopg2.connect(os.environ["PG_CONNECTION_STRING"])
@@ -64,15 +90,21 @@ def semantic_search(embedding: list[float], table: str, k: int, min_sim: float):
 
 # ── MCP definition ────────────────────────────────────────────────────────────
 
+_populated = get_populated_tables()
+print(f"Tables with data: {_populated or '(none)'}")
+
+_instructions_parts = ["Use the appropriate search tool based on what the user is asking about:"]
+if "apex_chunks" in _populated:
+    _instructions_parts.append("- search_apex_docs  → Apex (server-side code, triggers, classes, SOQL, governors)")
+if "lwc_chunks" in _populated:
+    _instructions_parts.append("- search_lwc_docs   → Lightning Web Components (client-side UI, HTML templates, JS)")
+if "aura_chunks" in _populated:
+    _instructions_parts.append("- search_aura_docs  → Aura Components (legacy Lightning framework)")
+
 mcp = FastMCP(
     name="sf-docs",
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
-    instructions=(
-        "Use the appropriate search tool based on what the user is asking about:\n"
-        "- search_apex_docs  → Apex (server-side code, triggers, classes, SOQL, governors)\n"
-        "- search_lwc_docs   → Lightning Web Components (client-side UI, HTML templates, JS)\n"
-        "- search_aura_docs  → Aura Components (legacy Lightning framework)"
-    ),
+    instructions="\n".join(_instructions_parts),
 )
 
 
@@ -88,46 +120,49 @@ def _search(table: str, query: str, k: int) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-@mcp.tool()
-def search_apex_docs(query: str, k: int = 5) -> str:
-    """
-    Search the Salesforce Apex Developer Guide.
-    Use for: Apex syntax, classes, triggers, SOQL/SOSL, governor limits,
-    async Apex, batch jobs, platform events, testing.
+if "apex_chunks" in _populated:
+    @mcp.tool()
+    def search_apex_docs(query: str, k: int = 5) -> str:
+        """
+        Search the Salesforce Apex Developer Guide.
+        Use for: Apex syntax, classes, triggers, SOQL/SOSL, governor limits,
+        async Apex, batch jobs, platform events, testing.
 
-    Args:
-        query: Question or keyword phrase about Apex.
-        k:     Number of results (default 5, max 10).
-    """
-    return _search("apex_chunks", query, k)
-
-
-@mcp.tool()
-def search_lwc_docs(query: str, k: int = 5) -> str:
-    """
-    Search the Lightning Web Components (LWC) Developer Guide.
-    Use for: LWC component lifecycle, HTML templates, JS controllers,
-    wire service, events, navigation, testing with Jest.
-
-    Args:
-        query: Question or keyword phrase about LWC.
-        k:     Number of results (default 5, max 10).
-    """
-    return _search("lwc_chunks", query, k)
+        Args:
+            query: Question or keyword phrase about Apex.
+            k:     Number of results (default 5, max 10).
+        """
+        return _search("apex_chunks", query, k)
 
 
-@mcp.tool()
-def search_aura_docs(query: str, k: int = 5) -> str:
-    """
-    Search the Aura Components Developer Guide.
-    Use for: Aura component bundle structure, controllers, helpers,
-    renderers, events, force: and lightning: namespaces.
+if "lwc_chunks" in _populated:
+    @mcp.tool()
+    def search_lwc_docs(query: str, k: int = 5) -> str:
+        """
+        Search the Lightning Web Components (LWC) Developer Guide.
+        Use for: LWC component lifecycle, HTML templates, JS controllers,
+        wire service, events, navigation, testing with Jest.
 
-    Args:
-        query: Question or keyword phrase about Aura.
-        k:     Number of results (default 5, max 10).
-    """
-    return _search("aura_chunks", query, k)
+        Args:
+            query: Question or keyword phrase about LWC.
+            k:     Number of results (default 5, max 10).
+        """
+        return _search("lwc_chunks", query, k)
+
+
+if "aura_chunks" in _populated:
+    @mcp.tool()
+    def search_aura_docs(query: str, k: int = 5) -> str:
+        """
+        Search the Aura Components Developer Guide.
+        Use for: Aura component bundle structure, controllers, helpers,
+        renderers, events, force: and lightning: namespaces.
+
+        Args:
+            query: Question or keyword phrase about Aura.
+            k:     Number of results (default 5, max 10).
+        """
+        return _search("aura_chunks", query, k)
 
 
 # ── Auth middleware ───────────────────────────────────────────────────────────
