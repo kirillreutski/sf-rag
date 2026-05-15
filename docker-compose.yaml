@@ -6,3 +6,5 @@ services:
     ports:
       - "${MCP_PORT:-8000}:${MCP_PORT:-8000}"
     env_file: .env
+    labels:
+      - "traefik.http.services.mcp.loadbalancer.responseForwarding.flushInterval=-1"
