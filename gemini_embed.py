@@ -20,12 +20,13 @@ class KeyRotator:
         if not keys:
             raise ValueError("GEMINI_EMBEDDING_API_TOKEN is empty")
         self.keys = keys
+        self._clients = [genai.Client(api_key=k) for k in keys]
         self._idx = 0
         self._consecutive_failures = 0
 
     @property
     def client(self) -> genai.Client:
-        return genai.Client(api_key=self.keys[self._idx])
+        return self._clients[self._idx]
 
     def on_success(self) -> None:
         self._consecutive_failures = 0
