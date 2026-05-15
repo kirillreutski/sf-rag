@@ -57,15 +57,49 @@ class RateLimiter:
 
 _limiter = RateLimiter(MAX_RPM)
 
-# ── Gemini ────────────────────────────────────────────────────────────────────
+# ── Gemini key rotator ────────────────────────────────────────────────────────
 
-_client = genai.Client(api_key=os.environ["GEMINI_EMBEDDING_API_TOKEN"])
+class KeyRotator:
+    """
+    Cycles through API keys on 429. Raises only when every key
+    returns 429 in a row without a successful request between them.
+    """
+
+    def __init__(self, keys: list[str]) -> None:
+        if not keys:
+            raise ValueError("GEMINI_EMBEDDING_API_TOKEN is empty")
+        self.keys = keys
+        self._idx = 0
+        self._consecutive_failures = 0
+
+    @property
+    def client(self) -> genai.Client:
+        return genai.Client(api_key=self.keys[self._idx])
+
+    def on_success(self) -> None:
+        self._consecutive_failures = 0
+
+    def rotate(self) -> bool:
+        """Switch to next key. Returns False when all keys have failed in a row."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= len(self.keys):
+            return False
+        self._idx = (self._idx + 1) % len(self.keys)
+        return True
+
+    @property
+    def label(self) -> str:
+        return f"key {self._idx + 1}/{len(self.keys)}"
+
+
+_keys = [k.strip() for k in os.environ["GEMINI_EMBEDDING_API_TOKEN"].split(",") if k.strip()]
+_rotator = KeyRotator(_keys)
 
 
 def get_embedding(text: str, retries: int = 0) -> list[float]:
     _limiter.acquire()
     try:
-        result = _client.models.embed_content(
+        result = _rotator.client.models.embed_content(
             model=GEMINI_MODEL,
             contents=text,
             config=types.EmbedContentConfig(
@@ -73,12 +107,19 @@ def get_embedding(text: str, retries: int = 0) -> list[float]:
                 output_dimensionality=EMBEDDING_DIM,
             ),
         )
+        _rotator.on_success()
         return result.embeddings[0].values
     except Exception as exc:
+        if "429" in str(exc):
+            if not _rotator.rotate():
+                raise RuntimeError(f"All {len(_rotator.keys)} API keys exhausted with 429") from exc
+            print(f"\n  [429 → {_rotator.label}]")
+            return get_embedding(text, retries)   # retry same chunk with new key, no backoff
+
         if retries >= MAX_RETRIES:
             raise
         wait = 2 ** retries
-        print(f"\n  [retry {retries+1}/{MAX_RETRIES}] {exc!r} — waiting {wait}s")
+        print(f"\n  [retry {retries + 1}/{MAX_RETRIES}] {exc!r} — waiting {wait}s")
         time.sleep(wait)
         return get_embedding(text, retries + 1)
 
