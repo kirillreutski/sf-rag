@@ -1,9 +1,9 @@
--- Run once against your PostgreSQL database.
--- Requires pgvector extension (https://github.com/pgvector/pgvector).
+-- Template: do not run directly, use setup_guide.py instead.
+-- Placeholders {GUIDE} and {TABLE} are replaced by setup_guide.py.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TABLE IF NOT EXISTS apex_chunks (
+CREATE TABLE IF NOT EXISTS {TABLE} (
     id          UUID PRIMARY KEY,
     source      TEXT        NOT NULL,
     breadcrumb  TEXT        NOT NULL,
@@ -13,14 +13,11 @@ CREATE TABLE IF NOT EXISTS apex_chunks (
     embedding   vector(768) NOT NULL
 );
 
--- HNSW index for fast cosine-similarity search.
--- Tune m / ef_construction after loading data if needed.
-CREATE INDEX IF NOT EXISTS apex_chunks_embedding_idx
-    ON apex_chunks USING hnsw (embedding vector_cosine_ops)
+CREATE INDEX IF NOT EXISTS {TABLE}_embedding_idx
+    ON {TABLE} USING hnsw (embedding vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
 
--- Convenience search function called by the MCP server.
-CREATE OR REPLACE FUNCTION search_apex_docs(
+CREATE OR REPLACE FUNCTION search_{GUIDE}(
     query_embedding vector(768),
     match_count     INT   DEFAULT 5,
     min_similarity  FLOAT DEFAULT 0.3
@@ -36,13 +33,9 @@ RETURNS TABLE (
 LANGUAGE sql STABLE
 AS $$
     SELECT
-        id,
-        source,
-        breadcrumb,
-        heading,
-        text,
+        id, source, breadcrumb, heading, text,
         1 - (embedding <=> query_embedding) AS similarity
-    FROM  apex_chunks
+    FROM  {TABLE}
     WHERE 1 - (embedding <=> query_embedding) > min_similarity
     ORDER BY embedding <=> query_embedding
     LIMIT match_count;

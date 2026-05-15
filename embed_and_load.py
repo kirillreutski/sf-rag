@@ -2,7 +2,7 @@
 Embed chunks with Gemini Embedding 2 and load them into PostgreSQL (pgvector).
 
 Usage:
-    python embed_and_load.py [--chunks chunks/chunks.jsonl]
+    python embed_and_load.py --chunks chunks/lwc_chunks.jsonl --table lwc_chunks
 
 Environment variables (set in .env):
     PG_CONNECTION_STRING        postgresql://user:pass@host:5432/dbname
@@ -57,15 +57,49 @@ class RateLimiter:
 
 _limiter = RateLimiter(MAX_RPM)
 
-# ── Gemini ────────────────────────────────────────────────────────────────────
+# ── Gemini key rotator ────────────────────────────────────────────────────────
 
-_client = genai.Client(api_key=os.environ["GEMINI_EMBEDDING_API_TOKEN"])
+class KeyRotator:
+    """
+    Cycles through API keys on 429. Raises only when every key
+    returns 429 in a row without a successful request between them.
+    """
+
+    def __init__(self, keys: list[str]) -> None:
+        if not keys:
+            raise ValueError("GEMINI_EMBEDDING_API_TOKEN is empty")
+        self.keys = keys
+        self._idx = 0
+        self._consecutive_failures = 0
+
+    @property
+    def client(self) -> genai.Client:
+        return genai.Client(api_key=self.keys[self._idx])
+
+    def on_success(self) -> None:
+        self._consecutive_failures = 0
+
+    def rotate(self) -> bool:
+        """Switch to next key. Returns False when all keys have failed in a row."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= len(self.keys):
+            return False
+        self._idx = (self._idx + 1) % len(self.keys)
+        return True
+
+    @property
+    def label(self) -> str:
+        return f"key {self._idx + 1}/{len(self.keys)}"
+
+
+_keys = [k.strip() for k in os.environ["GEMINI_EMBEDDING_API_TOKEN"].split(",") if k.strip()]
+_rotator = KeyRotator(_keys)
 
 
 def get_embedding(text: str, retries: int = 0) -> list[float]:
     _limiter.acquire()
     try:
-        result = _client.models.embed_content(
+        result = _rotator.client.models.embed_content(
             model=GEMINI_MODEL,
             contents=text,
             config=types.EmbedContentConfig(
@@ -73,12 +107,19 @@ def get_embedding(text: str, retries: int = 0) -> list[float]:
                 output_dimensionality=EMBEDDING_DIM,
             ),
         )
+        _rotator.on_success()
         return result.embeddings[0].values
     except Exception as exc:
+        if "429" in str(exc):
+            if not _rotator.rotate():
+                raise RuntimeError(f"All {len(_rotator.keys)} API keys exhausted with 429") from exc
+            print(f"\n  [429 → {_rotator.label}]")
+            return get_embedding(text, retries)   # retry same chunk with new key, no backoff
+
         if retries >= MAX_RETRIES:
             raise
         wait = 2 ** retries
-        print(f"\n  [retry {retries+1}/{MAX_RETRIES}] {exc!r} — waiting {wait}s")
+        print(f"\n  [retry {retries + 1}/{MAX_RETRIES}] {exc!r} — waiting {wait}s")
         time.sleep(wait)
         return get_embedding(text, retries + 1)
 
@@ -93,15 +134,15 @@ def connect() -> psycopg2.extensions.connection:
     return psycopg2.connect(os.environ["PG_CONNECTION_STRING"])
 
 
-def get_existing_ids(conn) -> set[str]:
+def get_existing_ids(conn, table: str) -> set[str]:
     with conn.cursor() as cur:
-        cur.execute("SELECT id FROM apex_chunks;")
+        cur.execute(f"SELECT id FROM {table};")
         return {str(row[0]) for row in cur.fetchall()}
 
 
-def insert_batch(conn, rows: list[dict]) -> int:
-    sql = """
-        INSERT INTO apex_chunks (id, source, breadcrumb, heading, text, token_count, embedding)
+def insert_batch(conn, rows: list[dict], table: str) -> int:
+    sql = f"""
+        INSERT INTO {table} (id, source, breadcrumb, heading, text, token_count, embedding)
         VALUES (%s, %s, %s, %s, %s, %s, %s::vector)
         ON CONFLICT (id) DO NOTHING;
     """
@@ -189,7 +230,7 @@ class ProgressLogger:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main(chunks_path: Path) -> None:
+def main(chunks_path: Path, table: str) -> None:
     chunks = [
         json.loads(line)
         for line in chunks_path.read_text().splitlines()
@@ -197,9 +238,10 @@ def main(chunks_path: Path) -> None:
     ]
 
     print(f"Chunks file : {chunks_path}  ({len(chunks)} total)")
+    print(f"Table       : {table}")
 
     conn     = connect()
-    existing = get_existing_ids(conn)
+    existing = get_existing_ids(conn, table)
     todo     = [c for c in chunks if c["id"] not in existing]
 
     print(f"In DB       : {len(existing)}")
@@ -223,14 +265,14 @@ def main(chunks_path: Path) -> None:
 
         inserted = 0
         if len(batch) >= BATCH_SIZE:
-            inserted = insert_batch(conn, batch)
+            inserted = insert_batch(conn, batch, table)
             batch.clear()
 
         progress.tick(inserted)
 
     # Flush remainder
     if batch:
-        inserted = insert_batch(conn, batch)
+        inserted = insert_batch(conn, batch, table)
         progress.inserted += inserted
 
     elapsed = time.monotonic() - t_start
@@ -242,6 +284,7 @@ def main(chunks_path: Path) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--chunks", default="chunks/chunks.jsonl", type=Path)
+    parser.add_argument("--chunks", required=True,              type=Path, help="Input .jsonl file")
+    parser.add_argument("--table",  required=True,              type=str,  help="Target PostgreSQL table (e.g. lwc_chunks)")
     args = parser.parse_args()
-    main(args.chunks)
+    main(args.chunks, args.table)

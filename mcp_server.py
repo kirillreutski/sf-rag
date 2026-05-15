@@ -65,13 +65,15 @@ def vec_literal(v: list[float]) -> str:
     return "[" + ",".join(f"{x:.8f}" for x in v) + "]"
 
 
-def semantic_search(embedding: list[float], k: int, min_sim: float):
+def semantic_search(embedding: list[float], table: str, k: int, min_sim: float):
+    # Derive function name from table: apex_chunks → search_apex
+    guide = table.replace("_chunks", "")
     conn = psycopg2.connect(os.environ["PG_CONNECTION_STRING"])
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT breadcrumb, heading, text, similarity "
-                "FROM search_apex_docs(%s::vector, %s, %s);",
+                f"SELECT breadcrumb, heading, text, similarity "
+                f"FROM search_{guide}(%s::vector, %s, %s);",
                 (vec_literal(embedding), k, min_sim),
             )
             return cur.fetchall()
@@ -82,37 +84,68 @@ def semantic_search(embedding: list[float], k: int, min_sim: float):
 # ── MCP definition ────────────────────────────────────────────────────────────
 
 mcp = FastMCP(
-    name="apex-docs",
+    name="sf-docs",
     instructions=(
-        "Use search_apex_docs whenever the user asks about Salesforce Apex: "
-        "syntax, classes, triggers, governors, SOQL, async patterns, etc."
+        "Use the appropriate search tool based on what the user is asking about:\n"
+        "- search_apex_docs  → Apex (server-side code, triggers, classes, SOQL, governors)\n"
+        "- search_lwc_docs   → Lightning Web Components (client-side UI, HTML templates, JS)\n"
+        "- search_aura_docs  → Aura Components (legacy Lightning framework)"
     ),
 )
 
 
-@mcp.tool()
-def search_apex_docs(query: str, k: int = 5) -> str:
-    """
-    Semantic search over the Salesforce Apex Developer Guide.
-
-    Args:
-        query: Natural-language question or keyword phrase about Apex.
-        k:     Number of results to return (default 5, max 10).
-
-    Returns:
-        Formatted documentation excerpts ranked by relevance.
-    """
+def _search(table: str, query: str, k: int) -> str:
     k = min(k, 10)
-    rows = semantic_search(embed_query(query), k, min_sim=0.3)
-
+    rows = semantic_search(embed_query(query), table, k, min_sim=0.3)
     if not rows:
         return "No relevant documentation found. Try rephrasing the query."
-
     parts = [
         f"## Result {i} — {breadcrumb}\n**Similarity:** {sim:.2f}\n\n{text}"
         for i, (breadcrumb, _, text, sim) in enumerate(rows, 1)
     ]
     return "\n\n---\n\n".join(parts)
+
+
+@mcp.tool()
+def search_apex_docs(query: str, k: int = 5) -> str:
+    """
+    Search the Salesforce Apex Developer Guide.
+    Use for: Apex syntax, classes, triggers, SOQL/SOSL, governor limits,
+    async Apex, batch jobs, platform events, testing.
+
+    Args:
+        query: Question or keyword phrase about Apex.
+        k:     Number of results (default 5, max 10).
+    """
+    return _search("apex_chunks", query, k)
+
+
+@mcp.tool()
+def search_lwc_docs(query: str, k: int = 5) -> str:
+    """
+    Search the Lightning Web Components (LWC) Developer Guide.
+    Use for: LWC component lifecycle, HTML templates, JS controllers,
+    wire service, events, navigation, testing with Jest.
+
+    Args:
+        query: Question or keyword phrase about LWC.
+        k:     Number of results (default 5, max 10).
+    """
+    return _search("lwc_chunks", query, k)
+
+
+@mcp.tool()
+def search_aura_docs(query: str, k: int = 5) -> str:
+    """
+    Search the Aura Components Developer Guide.
+    Use for: Aura component bundle structure, controllers, helpers,
+    renderers, events, force: and lightning: namespaces.
+
+    Args:
+        query: Question or keyword phrase about Aura.
+        k:     Number of results (default 5, max 10).
+    """
+    return _search("aura_chunks", query, k)
 
 
 # ── Auth middleware (SSE only) ─────────────────────────────────────────────────
